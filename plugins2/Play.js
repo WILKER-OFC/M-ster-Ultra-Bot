@@ -1,271 +1,354 @@
-// commands/play.js — Sky API (sin límites) + reacciones/respuestas
-const axios = require("axios");
-const yts = require("yt-search");
-const fs = require("fs");
-const path = require("path");
-const ffmpeg = require("fluent-ffmpeg");
-const { promisify } = require("util");
-const { pipeline } = require("stream");
-const streamPipe = promisify(pipeline);
+const yts = require('yt-search');
+const axios = require('axios');
 
-// Sky API
-const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
-const API_KEY  = process.env.API_KEY  || "Russellxz";
+const MAX_SECONDS = 90 * 60;
+const HTTP_TIMEOUT_MS = 90 * 1000;
 
-// Almacena tareas pendientes por previewMessageId
-const pending = {};
-
-// --- helper Sky API ---
-async function skyYT(url, format) {
-  const { data, status } = await axios.get(`${API_BASE}/api/download/yt.php`, {
-    params: { url, format }, // 'audio' | 'video'
-    headers: { Authorization: `Bearer ${API_KEY}` },
-    timeout: 60000,
-    validateStatus: s => s >= 200 && s < 600
-  });
-  if (status !== 200 || !data || data.status !== "true" || !data.data) {
-    throw new Error(data?.error || `HTTP ${status}`);
-  }
-  return data.data; // { title, thumbnail, duration, audio?, video? }
+function parseDurationToSeconds(d) {
+  if (d == null) return null;
+  if (typeof d === 'number' && Number.isFinite(d)) return Math.max(0, Math.floor(d));
+  const s = String(d).trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return Math.max(0, parseInt(s, 10));
+  const parts = s.split(':').map((x) => x.trim()).filter(Boolean);
+  if (!parts.length || parts.some((p) => !/^\d+$/.test(p))) return null;
+  let sec = 0;
+  for (const p of parts) sec = sec * 60 + parseInt(p, 10);
+  return Number.isFinite(sec) ? sec : null;
 }
 
-// Utilidad: descarga a disco y devuelve ruta
-async function downloadToFile(url, filePath) {
-  const res = await axios.get(url, { responseType: "stream" });
-  await streamPipe(res.data, fs.createWriteStream(filePath));
-  return filePath;
-}
+function formatErr(err, maxLen = 1500) {
+  const e = err ?? 'Error desconocido';
+  let msg = '';
 
-module.exports = async (msg, { conn, text }) => {
-  const subID = (conn.user.id || "").split(":")[0] + "@s.whatsapp.net";
-  const pref = (() => {
+  if (e instanceof Error) msg = e.stack || `${e.name}: ${e.message}`;
+  else if (typeof e === 'string') msg = e;
+  else {
     try {
-      const p = JSON.parse(fs.readFileSync("prefixes.json", "utf8"));
-      return p[subID] || ".";
+      msg = JSON.stringify(e, null, 2);
     } catch {
-      return ".";
+      msg = String(e);
     }
-  })();
+  }
+
+  msg = String(msg || 'Error desconocido').trim();
+  if (msg.length > maxLen) msg = msg.slice(0, maxLen) + '\n... (recortado)';
+  return msg;
+}
+
+async function fetchJson(url, timeoutMs = HTTP_TIMEOUT_MS) {
+  try {
+    const res = await axios.get(url, {
+      timeout: timeoutMs,
+      headers: { 
+        accept: 'application/json', 
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
+      },
+      validateStatus: function (status) {
+        return status < 500;
+      }
+    });
+
+    console.log(`📊 Status API: ${res.status}`);
+
+    if (!res.data) throw new Error('Respuesta vacía de la API');
+
+    let data = res.data;
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data);
+      } catch {
+        return { raw: data };
+      }
+    }
+
+    return data;
+  } catch (error) {
+    console.error(`🔥 Error en fetchJson:`, error.message);
+
+    if (error.response) {
+      let errorMsg = `HTTP ${error.response.status}`;
+      if (error.response.data) {
+        if (typeof error.response.data === 'object') {
+          errorMsg += `: ${error.response.data.error || error.response.data.message || JSON.stringify(error.response.data).slice(0, 200)}`;
+        } else {
+          errorMsg += `: ${String(error.response.data).slice(0, 200)}`;
+        }
+      }
+      throw new Error(errorMsg);
+    }
+
+    if (error.code === 'ECONNABORTED') {
+      throw new Error('Timeout: La API no respondió a tiempo');
+    }
+
+    throw new Error(`Error de conexión: ${error.message}`);
+  }
+}
+
+async function fetchBuffer(url, timeoutMs = HTTP_TIMEOUT_MS) {
+  try {
+    const res = await axios.get(url, {
+      timeout: timeoutMs,
+      responseType: 'arraybuffer',
+      headers: { 
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
+      },
+      maxContentLength: 100 * 1024 * 1024,
+      maxBodyLength: 100 * 1024 * 1024
+    });
+
+    if (!res.data || res.data.length === 0) {
+      throw new Error('Archivo vacío recibido');
+    }
+
+    console.log(`✅ Archivo descargado: ${(res.data.length / (1024 * 1024)).toFixed(2)}MB`);
+    return Buffer.from(res.data);
+  } catch (error) {
+    console.error(`🔥 Error en fetchBuffer:`, error.message);
+
+    if (error.response) {
+      throw new Error(`No se pudo descargar el audio (HTTP ${error.response.status})`);
+    }
+
+    if (error.code === 'ECONNABORTED') {
+      throw new Error('Timeout al descargar el audio');
+    }
+
+    throw new Error(`Error de descarga: ${error.message}`);
+  }
+}
+
+function guessMimeFromUrl(fileUrl = '') {
+  let ext = '';
+  try {
+    ext = new URL(fileUrl).pathname.split('.').pop() || '';
+  } catch {
+    ext = String(fileUrl).split('.').pop() || '';
+  }
+  ext = '.' + String(ext).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (ext === '.m4a') return 'audio/mp4';
+  if (ext === '.opus') return 'audio/ogg; codecs=opus';
+  if (ext === '.webm') return 'audio/webm';
+  return 'audio/mpeg';
+}
+
+function safeFileName(name = 'audio') {
+  return String(name)
+    .slice(0, 90)
+    .replace(/[^\w\s.-]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim() || 'audio';
+}
+
+let handler = async (m, { conn, text, usedPrefix, command }) => {
+  const chatId = m?.chat || m?.key?.remoteJid;
+  if (!chatId) return;
 
   if (!text) {
     return conn.sendMessage(
-      msg.key.remoteJid,
-      { text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles` },
-      { quoted: msg }
+      chatId,
+      { text: `🎵 Usa: *${usedPrefix + command} <nombre o link>*\nEj: *${usedPrefix}play* bad bunny` },
+      { quoted: m }
     );
   }
 
-  // reacción de carga
-  await conn.sendMessage(msg.key.remoteJid, {
-    react: { text: "⏳", key: msg.key }
-  });
+  await conn.sendMessage(chatId, { react: { text: '🕒', key: m.key } }).catch(() => {});
 
-  // búsqueda
-  const res = await yts(text);
-  const video = res.videos?.[0];
-  if (!video) {
-    return conn.sendMessage(
-      msg.key.remoteJid,
-      { text: "❌ Sin resultados." },
-      { quoted: msg }
-    );
-  }
+  let ytUrl = text.trim();
+  let ytInfo = null;
 
-  const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video;
-  const viewsFmt = (views || 0).toLocaleString();
+  try {
+    console.log(`🔍 Buscando: ${text}`);
 
-  const caption = `
-╔═══════════════╗
-║✦ 𝘼𝙕𝙐𝙍𝘼 SUBBOTS✦
-╚═══════════════╝
-📀 Info del video:
-╭───────────────╮
-├ 🎼 Título: ${title}
-├ ⏱️ Duración: ${duration}
-├ 👁️ Vistas: ${viewsFmt}
-├ 👤 Autor: ${author?.name || author || "Desconocido"}
-└ 🔗 Link: ${videoUrl}
-╰───────────────╯
-📥 Opciones de Descarga (reacciona o responde):
-┣ 👍 Audio MP3     (1 / audio)
-┣ ❤️ Video MP4     (2 / video)
-┣ 📄 Audio Doc     (4 / audiodoc)
-┗ 📁 Video Doc     (3 / videodoc)
-
-✦ Source: api-sky.ultraplus.click
-═════════════════════
-   𖥔 Azura SUBBOTS 𖥔
-═════════════════════`.trim();
-
-  // envía preview
-  const preview = await conn.sendMessage(
-    msg.key.remoteJid,
-    { image: { url: thumbnail }, caption },
-    { quoted: msg }
-  );
-
-  // guarda trabajo
-  pending[preview.key.id] = {
-    chatId: msg.key.remoteJid,
-    videoUrl,
-    title,
-    commandMsg: msg,
-    done: { audio: false, video: false, audioDoc: false, videoDoc: false }
-  };
-
-  // confirmación
-  await conn.sendMessage(msg.key.remoteJid, {
-    react: { text: "✅", key: msg.key }
-  });
-
-  // listener único
-  if (!conn._playproListener) {
-    conn._playproListener = true;
-    conn.ev.on("messages.upsert", async ev => {
-      for (const m of ev.messages) {
-        // 1) REACCIONES
-        if (m.message?.reactionMessage) {
-          const { key: reactKey, text: emoji } = m.message.reactionMessage;
-          const job = pending[reactKey.id];
-          if (job) {
-            await handleDownload(conn, job, emoji, job.commandMsg);
-          }
-        }
-
-        // 2) RESPUESTAS CITADAS (1/2/3/4)
-        try {
-          const context = m.message?.extendedTextMessage?.contextInfo;
-          const citado = context?.stanzaId;
-          const texto = (
-            m.message?.conversation?.toLowerCase() ||
-            m.message?.extendedTextMessage?.text?.toLowerCase() ||
-            ""
-          ).trim();
-          const job = pending[citado];
-          const chatId = m.key.remoteJid;
-          if (citado && job) {
-            // AUDIO
-            if (["1", "audio", "4", "audiodoc"].includes(texto)) {
-              const docMode = ["4", "audiodoc"].includes(texto);
-              await conn.sendMessage(chatId, { react: { text: docMode ? "📄" : "🎵", key: m.key } });
-              await conn.sendMessage(chatId, { text: `🎶 Descargando audio...` }, { quoted: m });
-              await downloadAudio(conn, job, docMode, m);
-            }
-            // VIDEO
-            else if (["2", "video", "3", "videodoc"].includes(texto)) {
-              const docMode = ["3", "videodoc"].includes(texto);
-              await conn.sendMessage(chatId, { react: { text: docMode ? "📁" : "🎬", key: m.key } });
-              await conn.sendMessage(chatId, { text: `🎥 Descargando video...` }, { quoted: m });
-              await downloadVideo(conn, job, docMode, m);
-            }
-            // AYUDA
-            else {
-              await conn.sendMessage(chatId, {
-                text: `⚠️ Opciones válidas:\n1/audio, 4/audiodoc → audio\n2/video, 3/videodoc → video`
-              }, { quoted: m });
-            }
-
-            // elimina de pending después de 5 minutos
-            if (!job._timer) {
-              job._timer = setTimeout(() => delete pending[citado], 5 * 60 * 1000);
-            }
-          }
-        } catch (e) {
-          console.error("Error en detector citado:", e);
-        }
+    if (!/youtu\.be|youtube\.com/i.test(ytUrl)) {
+      const search = await yts(ytUrl);
+      const first = search?.videos?.[0];
+      if (!first) {
+        await conn.sendMessage(chatId, { text: '❌ No se encontraron resultados.' }, { quoted: m });
+        return;
       }
-    });
+      ytInfo = first;
+      ytUrl = first.url;
+    } else {
+      const search = await yts({ query: ytUrl, pages: 1 });
+      if (search?.videos?.length) ytInfo = search.videos[0];
+    }
+
+    console.log(`✅ Encontrado: ${ytInfo?.title}`);
+    console.log(`🔗 URL: ${ytUrl}`);
+  } catch (e) {
+    console.error('Error buscando:', e);
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Error buscando en YouTube.\n\nError: ${formatErr(e).slice(0, 500)}` },
+      { quoted: m }
+    );
+    return;
   }
-};
 
-async function handleDownload(conn, job, choice, quotedMsg) {
-  const mapping = {
-    "👍": "audio",
-    "❤️": "video",
-    "📄": "audioDoc",
-    "📁": "videoDoc"
-  };
-  const key = mapping[choice];
-  if (key) {
-    const isDoc = key.endsWith("Doc");
-    await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${isDoc ? "documento" : key}…` }, { quoted: job.commandMsg });
-    if (key.startsWith("audio")) await downloadAudio(conn, job, isDoc, job.commandMsg);
-    else await downloadVideo(conn, job, isDoc, job.commandMsg);
+  const durSec =
+    parseDurationToSeconds(ytInfo?.duration?.seconds) ??
+    parseDurationToSeconds(ytInfo?.seconds) ??
+    parseDurationToSeconds(ytInfo?.duration) ??
+    parseDurationToSeconds(ytInfo?.timestamp);
+
+  if (durSec && durSec > MAX_SECONDS) {
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Audio muy largo.\nMáximo: ${Math.floor(MAX_SECONDS / 60)} minutos.` },
+      { quoted: m }
+    );
+    return;
   }
-}
 
-async function downloadAudio(conn, job, asDocument, quoted) {
-  const { chatId, videoUrl, title } = job;
+  const title = ytInfo?.title || 'Audio';
+  const author = ytInfo?.author?.name || ytInfo?.author || 'Desconocido';
+  const duration = ytInfo?.timestamp || 'Desconocida';
+  const thumbnail = ytInfo?.thumbnail;
+  const views = ytInfo?.views || 0;
 
-  // Sky API (audio)
-  const d = await skyYT(videoUrl, "audio");
-  const mediaUrl = d.audio || d.video; // fallback si upstream solo da video
-  if (!mediaUrl) throw new Error("No se pudo obtener audio");
+  const caption =
+    `🎵 *M-STER ULTRA BOT SUBBOT*\n\n` +
+    `📀 *Información:*\n` +
+    `• *Título:* ${title}\n` +
+    `• *Duración:* ${duration}\n` +
+    `• *Vistas:* ${views.toLocaleString()}\n` +
+    `• *Autor:* ${author}\n` +
+    `• *Link:* ${ytUrl}\n\n` +
+    `📋 *Formato:* MP3\n\n` +
+    `⏳ *Descargando audio...*`;
 
-  // Descarga + (si no es mp3) convertir a MP3
-  const tmp = path.join(__dirname, "../tmp");
-  if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
+  try {
+    if (thumbnail) {
+      await conn.sendMessage(chatId, { image: { url: thumbnail }, caption }, { quoted: m });
+    } else {
+      await conn.sendMessage(chatId, { text: caption }, { quoted: m });
+    }
+  } catch (e) {
+    console.error('Error enviando preview:', e);
+  }
 
-  const urlPath = new URL(mediaUrl).pathname || "";
-  const ext = (urlPath.split(".").pop() || "bin").toLowerCase();
-  const isMp3 = ext === "mp3";
+  // Configuración de la API
+  const API_KEY = 'Mikeywilker1';
+  const API_BASE = 'https://api-adonix.ultraplus.click';
 
-  const inFile  = path.join(tmp, `${Date.now()}_in.${ext}`);
-  await downloadToFile(mediaUrl, inFile);
+  let apiResp = null;
+  try {
+    const apiUrl = `${API_BASE}/download/ytaudio`;
+    const params = {
+      apikey: API_KEY,
+      url: ytUrl
+    };
 
-  let outFile = inFile;
-  if (!isMp3) {
-    const tryOut = path.join(tmp, `${Date.now()}_out.mp3`);
-    try {
-      await new Promise((resolve, reject) =>
-        ffmpeg(inFile)
-          .audioCodec("libmp3lame")
-          .audioBitrate("128k")
-          .format("mp3")
-          .save(tryOut)
-          .on("end", resolve)
-          .on("error", reject)
-      );
-      outFile = tryOut;
-      try { fs.unlinkSync(inFile); } catch {}
-    } catch {
-      outFile = inFile; // si falla la conversión, enviamos el original
+    console.log(`🌐 Llamando API...`);
+    console.log(`URL: ${apiUrl}`);
+
+    apiResp = await fetchJson(`${apiUrl}?apikey=${encodeURIComponent(API_KEY)}&url=${encodeURIComponent(ytUrl)}`, HTTP_TIMEOUT_MS);
+
+    console.log(`✅ Respuesta API recibida`);
+  } catch (e) {
+    console.error('Error en la API:', e);
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Error con la API de audio.\n\nError: ${formatErr(e).slice(0, 500)}` },
+      { quoted: m }
+    );
+    return;
+  }
+
+  // Manejar diferentes formatos de respuesta
+  let directUrl = null;
+  let apiTitle = title;
+
+  // Intentar extraer la URL de descarga
+  if (apiResp?.url) {
+    directUrl = apiResp.url;
+    apiTitle = apiResp.title || title;
+  } else if (apiResp?.data?.url) {
+    directUrl = apiResp.data.url;
+    apiTitle = apiResp.data.title || title;
+  } else if (apiResp?.download) {
+    directUrl = apiResp.download;
+    apiTitle = apiResp.title || title;
+  } else if (apiResp?.link) {
+    directUrl = apiResp.link;
+    apiTitle = apiResp.title || title;
+  } else if (apiResp?.result?.url) {
+    directUrl = apiResp.result.url;
+    apiTitle = apiResp.result.title || title;
+  } else if (apiResp?.dl) {
+    directUrl = apiResp.dl;
+    apiTitle = apiResp.title || title;
+  } else if (apiResp?.direct) {
+    directUrl = apiResp.direct;
+    apiTitle = apiResp.title || title;
+  } else if (typeof apiResp === 'string' && apiResp.startsWith('http')) {
+    directUrl = apiResp;
+  } else if (apiResp?.raw && typeof apiResp.raw === 'string') {
+    const urlMatch = apiResp.raw.match(/(https?:\/\/[^\s"'<>]+\.(mp3|m4a|opus|webm)[^\s"'<>]*)/i);
+    if (urlMatch) {
+      directUrl = urlMatch[1];
     }
   }
 
-  const buffer = fs.readFileSync(outFile);
-  await conn.sendMessage(chatId, {
-    [asDocument ? "document" : "audio"]: buffer,
-    mimetype: "audio/mpeg",
-    fileName: `${title}.mp3`
-  }, { quoted });
+  if (!directUrl) {
+    console.error('❌ No se pudo extraer URL:', apiResp);
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ La API no devolvió un link válido.\nRespuesta: ${JSON.stringify(apiResp || 'Vacío').slice(0, 500)}` },
+      { quoted: m }
+    );
+    return;
+  }
 
-  try { fs.unlinkSync(outFile); } catch {}
-}
+  console.log(`✅ URL de descarga: ${directUrl}`);
+  console.log(`📝 Título: ${apiTitle}`);
 
-async function downloadVideo(conn, job, asDocument, quoted) {
-  const { chatId, videoUrl, title } = job;
+  try {
+    await conn.sendMessage(
+      chatId,
+      { text: `Audio descargado con éxito ✅.` },
+      { quoted: m }
+    );
 
-  // Sky API (video)
-  const d = await skyYT(videoUrl, "video");
-  const mediaUrl = d.video || d.audio; // fallback
-  if (!mediaUrl) throw new Error("No se pudo obtener video");
+    const audioBuffer = await fetchBuffer(directUrl, HTTP_TIMEOUT_MS * 2);
 
-  // Descarga
-  const tmp = path.join(__dirname, "../tmp");
-  if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
-  const file = path.join(tmp, `${Date.now()}_vid.mp4`);
-  await downloadToFile(mediaUrl, file);
+    if (!audioBuffer || audioBuffer.length === 0) {
+      throw new Error('El audio descargado está vacío');
+    }
 
-  // Enviar (SIN límite propio)
-  await conn.sendMessage(chatId, {
-    [asDocument ? "document" : "video"]: fs.readFileSync(file),
-    mimetype: "video/mp4",
-    fileName: `${title}.mp4`,
-    caption: asDocument ? undefined : `🎬 Aquí tiene su video.\n✦ Source: api-sky.ultraplus.click\n© Azura SUBBOTS`
-  }, { quoted });
+    const mime = guessMimeFromUrl(directUrl);
+    const fileName = `${safeFileName(apiTitle)}.mp3`;
 
-  try { fs.unlinkSync(file); } catch {}
-}
+    console.log(`✅ Audio listo: ${(audioBuffer.length / (1024 * 1024)).toFixed(2)}MB`);
 
-module.exports.command = ["play"];
+    await conn.sendMessage(
+      chatId,
+      {
+        audio: audioBuffer,
+        mimetype: mime,
+        fileName: fileName
+      },
+      { quoted: m }
+    );
+
+    console.log(`✅ Audio enviado exitosamente`);
+
+    await conn.sendMessage(chatId, { react: { text: '✅', key: m.key } }).catch(() => {});
+
+  } catch (e) {
+    console.error('Error procesando audio:', e);
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Error al procesar el audio.\n\nError: ${formatErr(e).slice(0, 500)}` },
+      { quoted: m }
+    );
+  }
+};
+
+handler.help = ['play <texto|link>'];
+handler.tags = ['multimedia'];
+handler.command = ['play'];
+
+module.exports = handler;
