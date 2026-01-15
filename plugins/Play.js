@@ -308,7 +308,7 @@ let handler = async (m, { conn, text, usedPrefix, command }) => {
   try {
     await conn.sendMessage(
       chatId,
-      { text: `⏳ Descargando audio...\nPor favor espera, esto puede tardar unos segundos.` },
+      { text: `Audio descargado con éxito ✅.` },
       { quoted: m }
     );
 
