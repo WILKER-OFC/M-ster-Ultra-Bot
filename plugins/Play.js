@@ -1,6 +1,6 @@
-import { spawn } from 'child_process'
-import fs from 'fs'
-import fetch from 'node-fetch'
+const { spawn } from 'child_process'
+const fs from 'fs'
+const fetch from 'node-fetch'
 
 const yt = {
   static: Object.freeze({
