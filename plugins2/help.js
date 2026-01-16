@@ -101,9 +101,9 @@ const handler = async (msg, { conn }) => {
     } else {
       // MENÚ POR DEFECTO NORMALITO
       caption = `
-╔⌬ ${nombreMenu}⌬╗
-║   Menú por categorías  
-╚═──────────────────═╝
+╔⌬ 
+ *M-STER ULTRA SUBBOT*   
+╚═──────────────────
 ┏━━━━━━━━━━━
 ┃usa: ${usedPrefix}menu 
 ┃y verás todo lo que ocupas saber.
