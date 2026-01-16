@@ -28,10 +28,13 @@ const handler = async (msg, { conn }) => {
     const personal = customData[subbotID];
     const videoBuffer = personal?.video ? Buffer.from(personal.video, "base64") : null;
     const gifBuffer = personal?.gif ? Buffer.from(personal.gif, "base64") : null;
+    const imageBuffer = personal?.imagen ? Buffer.from(personal.imagen, "base64") : null;
     const nombreMenu = personal?.nombre || "Azura Ultra 2.0 Subbot";
 
     let caption = "";
-    let footer = "";
+    
+    // URL del video por defecto que proporcionaste
+    const defaultVideoUrl = "https://o.uguu.se/GQbaQVtx.mp4";
 
     if (personal) {
       // MENÚ PERSONALIZADO DISEÑO BONITO
@@ -39,56 +42,56 @@ const handler = async (msg, { conn }) => {
 ╭─❍ 𓂃 𝑺𝒖𝒃𝒃𝒐𝒕 𝑷𝒆𝒓𝒔𝒐𝒏𝒂𝒍𝒊𝒛𝒂𝒅𝒐 ❍─╮
 │   𝙈𝙚𝙣𝙪́: *${nombreMenu}*
 ╰────────────────────╯
-— 🔹 ya lo subbots tienen rpg de personajes y mascotas y puedes  
-— 🔹 subirlo de nivel para ver los comando usar el rpg usa: 
+— 🔹 Ya los subbots tienen RPG de personajes y mascotas y puedes  
+— 🔹 subirlo de nivel. Para ver los comandos del RPG usa: 
 ✦ ${usedPrefix}menurpg  
-— 🔹 veras todo lo que ocupas saber.
+— 🔹 Verás todo lo que necesitas saber.
 
 ┏━━🧠 𝗜𝗻𝘁𝗲𝗹𝗶𝗴𝗲𝗻𝗰𝗶𝗮
-┃ ✦ ${usedPrefix}𝘤𝘩𝘢𝘵𝘨𝘱𝘵
-┃ ✦ ${usedPrefix}𝘨𝘦𝘮𝘪𝘯𝘪𝘴
+┃ ✦ ${usedPrefix}chatgpt
+┃ ✦ ${usedPrefix}geminis
 ┗━━━━━━━━━━━━━
 
 ┏━━📥 𝗗𝗲𝘀𝗰𝗮𝗿𝗴𝗮𝘀
-┃ ✦ ${usedPrefix}𝘱𝘭𝘢𝘺 / ${usedPrefix}𝘱𝘭𝘢𝘺𝘥𝘰𝘤
-┃ ✦ ${usedPrefix}𝘱𝘭𝘢𝘺2 / ${usedPrefix}𝘱𝘭𝘢𝘺2𝘥𝘰𝘤
-┃ ✦ ${usedPrefix}𝘺𝘵𝘮𝘱3 / ${usedPrefix}𝘺𝘵𝘮𝘱3𝘥𝘰𝘤
-┃ ✦ ${usedPrefix}𝘺𝘵𝘮𝘱4 / ${usedPrefix}𝘺𝘵𝘮𝘱4𝘥𝘰𝘤
-┃ ✦ ${usedPrefix}𝘢𝘱𝘬 / ${usedPrefix}𝘧𝘣 / ${usedPrefix}𝘪𝘨 / ${usedPrefix}𝘵𝘵
+┃ ✦ ${usedPrefix}play / ${usedPrefix}playdoc
+┃ ✦ ${usedPrefix}play2 / ${usedPrefix}play2doc
+┃ ✦ ${usedPrefix}ytmp3 / ${usedPrefix}ytmp3doc
+┃ ✦ ${usedPrefix}ytmp4 / ${usedPrefix}ytmp4doc
+┃ ✦ ${usedPrefix}apk / ${usedPrefix}fb / ${usedPrefix}ig / ${usedPrefix}tt
 ┗━━━━━━━━━━━━━
 
 ┏━━🎭 𝗠𝘂𝗹𝘁𝗶𝗺𝗲𝗱𝗶𝗮
-┃ ✦ ${usedPrefix}𝘴 / ${usedPrefix}𝘷𝘦𝘳 / ${usedPrefix}𝘩𝘥
-┃ ✦ ${usedPrefix}𝘵𝘰𝘪𝘮𝘨 / ${usedPrefix}𝘵𝘰𝘢𝘶𝘥𝘪𝘰 / ${usedPrefix}𝘵𝘵𝘴
-┃ ✦ ${usedPrefix}𝘸𝘩𝘢𝘵𝘮𝘶𝘴𝘪𝘤 / ${usedPrefix}𝘱𝘦𝘳𝘧𝘪𝘭
+┃ ✦ ${usedPrefix}s / ${usedPrefix}ver / ${usedPrefix}hd
+┃ ✦ ${usedPrefix}toimg / ${usedPrefix}toaudio / ${usedPrefix}tts
+┃ ✦ ${usedPrefix}whatmusic / ${usedPrefix}perfil
 ┗━━━━━━━━━━━━━
 
 ┏━━👥 𝗚𝗿𝘂𝗽𝗼𝘀
-┃ ✦ ${usedPrefix}𝘢𝘣𝘳𝘪𝘳𝘨𝘳𝘶𝘱𝘰 / ${usedPrefix}𝘤𝘦𝘳𝘳𝘢𝘳𝘨𝘳𝘶𝘱𝘰
-┃ ✦ ${usedPrefix}𝘪𝘯𝘧𝘰𝘨𝘳𝘶𝘱𝘰 / ${usedPrefix}𝘬𝘪𝘤𝘬
-┃ ✦ ${usedPrefix}𝘮𝘰𝘥𝘰𝘢𝘥𝘮𝘪𝘯𝘴 on/off
-┃ ✦ ${usedPrefix}𝘢𝘯𝘵𝘪𝘭𝘪𝘯𝘬 on/off
-┃ ✦ ${usedPrefix}𝘸𝘦𝘭𝘤𝘰𝘮𝘦 on/off
-┃ ✦ ${usedPrefix}𝘵𝘢𝘨𝘢𝘭𝘭 / ${usedPrefix}𝘵𝘰𝘥𝘰𝘴
-┃ ✦ ${usedPrefix}𝘥𝘢𝘮𝘦𝘭𝘪𝘯𝘬 / ${usedPrefix}𝘢𝘯𝘵𝘪𝘥𝘦𝘭𝘦𝘵𝘦
-┃ ✦ ${usedPrefix}addco(agrega comando a stickerz)
+┃ ✦ ${usedPrefix}abrirgrupo / ${usedPrefix}cerrargrupo
+┃ ✦ ${usedPrefix}infogrupo / ${usedPrefix}kick
+┃ ✦ ${usedPrefix}modoadmins on/off
+┃ ✦ ${usedPrefix}antilink on/off
+┃ ✦ ${usedPrefix}welcome on/off
+┃ ✦ ${usedPrefix}tagall / ${usedPrefix}todos
+┃ ✦ ${usedPrefix}damelink / ${usedPrefix}antidelete
+┃ ✦ ${usedPrefix}addco (agrega comando a stickerz)
 ┃ ✦ ${usedPrefix}delco (elimina el comando)
 ┗━━━━━━━━━━━━━
 
 ┏━━🎮 𝗝𝘂𝗲𝗴𝗼𝘀
-┃ ✦ ${usedPrefix}𝘬𝘪𝘴𝘴 / ${usedPrefix}𝘴𝘭𝘢𝘱
-┃ ✦ ${usedPrefix}𝘵𝘰𝘱𝘬𝘪𝘴𝘴 / ${usedPrefix}𝘵𝘰𝘱𝘴𝘭𝘢𝘱
-┃ ✦ ${usedPrefix}𝘷𝘦𝘳𝘥𝘢𝘥 / ${usedPrefix}𝘳𝘦𝘵𝘰
+┃ ✦ ${usedPrefix}kiss / ${usedPrefix}slap
+┃ ✦ ${usedPrefix}topkiss / ${usedPrefix}topslap
+┃ ✦ ${usedPrefix}verdad / ${usedPrefix}reto
 ┃ ✦ ${usedPrefix}mixemoji / ${usedPrefix}aniemoji
 ┗━━━━━━━━━━━━━
 
 ┏━━⚙️ 𝗖𝗼𝗻𝗳𝗶𝗴𝘀 & 𝗗𝘂𝗲ñ𝗼
-┃ ✦ ${usedPrefix}𝘴𝘦𝘵𝘱𝘳𝘦𝘧𝘪𝘹 / ${usedPrefix}𝘱𝘪𝘯𝘨
-┃ ✦ ${usedPrefix}𝘤𝘳𝘦𝘢𝘥𝘰𝘳 / ${usedPrefix}𝘨𝘦𝘵
-┃ ✦ ${usedPrefix}𝘢𝘥𝘥𝘭𝘪𝘴𝘵𝘢 / ${usedPrefix}𝘥𝘦𝘭𝘭𝘪𝘴𝘵𝘢
-┃ ✦ ${usedPrefix}𝘢𝘥𝘥𝘨𝘳𝘶𝘱𝘰 / ${usedPrefix}𝘥𝘦𝘭𝘨𝘳𝘶𝘱𝘰
-┃✦ ${usedPrefix}setmenu
-┃✦ ${usedPrefix}delmenu
+┃ ✦ ${usedPrefix}setprefix / ${usedPrefix}ping
+┃ ✦ ${usedPrefix}creador / ${usedPrefix}get
+┃ ✦ ${usedPrefix}addlista / ${usedPrefix}dellista
+┃ ✦ ${usedPrefix}addgrupo / ${usedPrefix}delgrupo
+┃ ✦ ${usedPrefix}setmenu
+┃ ✦ ${usedPrefix}delmenu
 ┗━━━━━━━━━━━━━
 
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -102,8 +105,8 @@ const handler = async (msg, { conn }) => {
 ║   Menú por categorías  
 ╚═──────────────────═╝
 ┏━━━━━━━━━━━
-┃usa:${usedPrefix}menu 
-┃y veras todo lo que ocupas saber.
+┃usa: ${usedPrefix}menu 
+┃y verás todo lo que ocupas saber.
 ┗━━━━━━━━━━━━
 
 ┏━━━━━━━━━━━━
@@ -125,20 +128,16 @@ const handler = async (msg, { conn }) => {
 ┏━━━━━━━━━━━━
 ┃ 〔 Descargas 〕
 ┃
-┃${usedPrefix}play / ${usedPrefix} 
-┃playdoc
-┃${usedPrefix}play2 / ${usedPrefix}
-┃play2doc
+┃${usedPrefix}play / ${usedPrefix}playdoc
+┃${usedPrefix}play2 / ${usedPrefix}play2doc
 ┃${usedPrefix}play5
 ┃${usedPrefix}play6
-┃${usedPrefix}ytmp3 / ${usedPrefix}
-┃ytmp3doc
+┃${usedPrefix}ytmp3 / ${usedPrefix}ytmp3doc
 ┃${usedPrefix}ytmp35
-┃${usedPrefix}ytmp4 / ${usedPrefix} 
-┃ytmp4doc
+┃${usedPrefix}ytmp4 / ${usedPrefix}ytmp4doc
 ┃${usedPrefix}ytmp45
 ┃${usedPrefix}apk
-┃${usedPrefix}instagram / ${usedPrefix} ig
+┃${usedPrefix}instagram / ${usedPrefix}ig
 ┃${usedPrefix}tiktok / ${usedPrefix}tt
 ┃${usedPrefix}facebook / ${usedPrefix}fb
 ┗━━━━━━━━━━━━━
@@ -167,13 +166,11 @@ const handler = async (msg, { conn }) => {
 ┃${usedPrefix}antilink on o off
 ┃${usedPrefix}welcome on o off
 ┃${usedPrefix}tag
-┃${usedPrefix}tagall / ${usedPrefix}
-┃invocar / ${usedPrefix}todos
+┃${usedPrefix}tagall / ${usedPrefix}invocar / ${usedPrefix}todos
 ┃${usedPrefix}infogrupo
 ┃${usedPrefix}damelink
 ┃${usedPrefix}antidelete on o off
-┃${usedPrefix}addco (agrega comando al 
-┃stickerz)
+┃${usedPrefix}addco (agrega comando al stickerz)
 ┃${usedPrefix}delco (elimina comando)
 ┃${usedPrefix}delete
 ┗━━━━━━━━━━━━━━━
@@ -195,65 +192,63 @@ const handler = async (msg, { conn }) => {
 ┃〔 Configuración & Dueño 〕
 ┃
 ┃${usedPrefix}antideletepri on o off
-┃${usedPrefix}setprefix ↷
-┃Cambiar prefijo del subbot
-┃${usedPrefix}creador ↷
-┃Contacto del creador
-┃${usedPrefix}get ↷
-┃Descargar estados
-┃${usedPrefix}addgrupo ↷
-┃Autorizar grupo pa que lo usen.
-┃${usedPrefix}addlista ↷
-┃Autorizar usuario privado pa lo usen.
-┃${usedPrefix}dellista ↷
-┃Quitar usuarios autorizados para que no
-┃lo usen.
-┃${usedPrefix}delgrupo ↷
-┃Eliminar grupo autorizado pa que no lo 
-┃usen.
-┃${usedPrefix}ping ↷
-┃Medir latencia del bot
-┃${usedPrefix}Setmenu ↷
-┃personaliza tu subbot
-┃${usedPrefix}delmenu ↷
-┃quita lo personalizado
+┃${usedPrefix}setprefix ↷ Cambiar prefijo del subbot
+┃${usedPrefix}creador ↷ Contacto del creador
+┃${usedPrefix}get ↷ Descargar estados
+┃${usedPrefix}addgrupo ↷ Autorizar grupo para que lo usen
+┃${usedPrefix}addlista ↷ Autorizar usuario privado para que lo use
+┃${usedPrefix}dellista ↷ Quitar usuarios autorizados
+┃${usedPrefix}delgrupo ↷ Eliminar grupo autorizado
+┃${usedPrefix}ping ↷ Medir latencia del bot
+┃${usedPrefix}setmenu ↷ Personaliza tu subbot
+┃${usedPrefix}delmenu ↷ Quita lo personalizado
 ┗━━━━━━━━━━━━━
 
-grupo oficial de 𝙈-𝙎𝙩𝙚𝙧-𝘽𝙤𝙩 🔹
+📱 Grupo oficial de 𝙈-𝙎𝙩𝙚𝙧-𝘽𝙤𝙩 🔹
 🔗 https://chat.whatsapp.com/IN2dNxVceScLqXQCGEq5dY
 
 ═⌬ M-STER ULTRA BOT Subbot ⌬═`.trim();
     }
 
-    // Enviar video o GIF si está configurado, de lo contrario enviar video por defecto
+    // Lógica para enviar el contenido multimedia según lo configurado
     if (videoBuffer) {
-      // Enviar video
+      // Enviar video personalizado
       await conn.sendMessage(
         msg.key.remoteJid,
         {
           video: videoBuffer,
           caption: caption,
-          gifPlayback: false // Para video normal
+          gifPlayback: false
         },
         { quoted: msg }
       );
     } else if (gifBuffer) {
-      // Enviar GIF animado
+      // Enviar GIF personalizado
       await conn.sendMessage(
         msg.key.remoteJid,
         {
           video: gifBuffer,
           caption: caption,
-          gifPlayback: true // Para GIF animado
+          gifPlayback: true
+        },
+        { quoted: msg }
+      );
+    } else if (imageBuffer) {
+      // Enviar imagen personalizada (compatibilidad con versiones anteriores)
+      await conn.sendMessage(
+        msg.key.remoteJid,
+        {
+          image: imageBuffer,
+          caption: caption
         },
         { quoted: msg }
       );
     } else {
-      // Enviar video por defecto desde URL
+      // Enviar video por defecto desde la URL que proporcionaste
       await conn.sendMessage(
         msg.key.remoteJid,
         {
-          video: { url: `https://o.uguu.se/GQbaQVtx.mp4/default-menu-video.mp4` }, // URL del video por defecto
+          video: { url: defaultVideoUrl },
           caption: caption,
           gifPlayback: false
         },
