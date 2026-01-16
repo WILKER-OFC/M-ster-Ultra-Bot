@@ -26,15 +26,16 @@ const handler = async (msg, { conn }) => {
     }
 
     const personal = customData[subbotID];
-    const imageBuffer = personal?.imagen ? Buffer.from(personal.imagen, "base64") : null;
+    const videoBuffer = personal?.video ? Buffer.from(personal.video, "base64") : null;
+    const gifBuffer = personal?.gif ? Buffer.from(personal.gif, "base64") : null;
     const nombreMenu = personal?.nombre || "Azura Ultra 2.0 Subbot";
 
     let caption = "";
     let footer = "";
 
     if (personal) {
-  // MENÚ PERSONALIZADO DISEÑO BONITO
-  caption = `
+      // MENÚ PERSONALIZADO DISEÑO BONITO
+      caption = `
 ╭─❍ 𓂃 𝑺𝒖𝒃𝒃𝒐𝒕 𝑷𝒆𝒓𝒔𝒐𝒏𝒂𝒍𝒊𝒛𝒂𝒅𝒐 ❍─╮
 │   𝙈𝙚𝙣𝙪́: *${nombreMenu}*
 ╰────────────────────╯
@@ -224,14 +225,41 @@ grupo oficial de 𝙈-𝙎𝙩𝙚𝙧-𝘽𝙤𝙩 🔹
 ═⌬ M-STER ULTRA BOT Subbot ⌬═`.trim();
     }
 
-    await conn.sendMessage(
-      msg.key.remoteJid,
-      {
-        image: imageBuffer ? imageBuffer : { url: `https://cdn.russellxz.click/75755d3a.jpeg` },
-        caption,
-      },
-      { quoted: msg }
-    );
+    // Enviar video o GIF si está configurado, de lo contrario enviar video por defecto
+    if (videoBuffer) {
+      // Enviar video
+      await conn.sendMessage(
+        msg.key.remoteJid,
+        {
+          video: videoBuffer,
+          caption: caption,
+          gifPlayback: false // Para video normal
+        },
+        { quoted: msg }
+      );
+    } else if (gifBuffer) {
+      // Enviar GIF animado
+      await conn.sendMessage(
+        msg.key.remoteJid,
+        {
+          video: gifBuffer,
+          caption: caption,
+          gifPlayback: true // Para GIF animado
+        },
+        { quoted: msg }
+      );
+    } else {
+      // Enviar video por defecto desde URL
+      await conn.sendMessage(
+        msg.key.remoteJid,
+        {
+          video: { url: `https://cdn.russellxz.click/default-menu-video.mp4` }, // URL del video por defecto
+          caption: caption,
+          gifPlayback: false
+        },
+        { quoted: msg }
+      );
+    }
 
     await conn.sendMessage(msg.key.remoteJid, {
       react: { text: "✅", key: msg.key }
