@@ -253,7 +253,7 @@ grupo oficial de 𝙈-𝙎𝙩𝙚𝙧-𝘽𝙤𝙩 🔹
       await conn.sendMessage(
         msg.key.remoteJid,
         {
-          video: { url: `https://cdn.russellxz.click/default-menu-video.mp4` }, // URL del video por defecto
+          video: { url: `https://o.uguu.se/GQbaQVtx.mp4/default-menu-video.mp4` }, // URL del video por defecto
           caption: caption,
           gifPlayback: false
         },
