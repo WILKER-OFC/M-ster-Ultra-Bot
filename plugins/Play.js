@@ -1,354 +1,432 @@
-const yts = require('yt-search');
-const axios = require('axios');
 
-const MAX_SECONDS = 90 * 60;
-const HTTP_TIMEOUT_MS = 90 * 1000;
+// commands/play.js
+"use strict";
 
-function parseDurationToSeconds(d) {
-  if (d == null) return null;
-  if (typeof d === 'number' && Number.isFinite(d)) return Math.max(0, Math.floor(d));
-  const s = String(d).trim();
-  if (!s) return null;
-  if (/^\d+$/.test(s)) return Math.max(0, parseInt(s, 10));
-  const parts = s.split(':').map((x) => x.trim()).filter(Boolean);
-  if (!parts.length || parts.some((p) => !/^\d+$/.test(p))) return null;
-  let sec = 0;
-  for (const p of parts) sec = sec * 60 + parseInt(p, 10);
-  return Number.isFinite(sec) ? sec : null;
+const axios = require("axios");
+const yts = require("yt-search");
+const fs = require("fs");
+const path = require("path");
+const ffmpeg = require("fluent-ffmpeg");
+const { promisify } = require("util");
+const { pipeline } = require("stream");
+const streamPipe = promisify(pipeline);
+
+// ==== CONFIG DE TU API ====
+const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
+const API_KEY = process.env.API_KEY || "Russellxz";
+
+// Defaults
+const DEFAULT_VIDEO_QUALITY = "360";
+const DEFAULT_AUDIO_FORMAT = "mp3";
+const MAX_MB = 99;
+
+// Calidades válidas (de tu API)
+const VALID_QUALITIES = new Set(["144", "240", "360", "720", "1080", "1440", "4k"]);
+
+// Almacena tareas pendientes por previewMessageId
+const pending = {};
+
+// ---------- utils ----------
+function safeName(name = "file") {
+  return (
+    String(name)
+      .slice(0, 90)
+      .replace(/[^\w.\- ]+/g, "_")
+      .replace(/\s+/g, " ")
+      .trim() || "file"
+  );
 }
 
-function formatErr(err, maxLen = 1500) {
-  const e = err ?? 'Error desconocido';
-  let msg = '';
+function fileSizeMB(filePath) {
+  const b = fs.statSync(filePath).size;
+  return b / (1024 * 1024);
+}
 
-  if (e instanceof Error) msg = e.stack || `${e.name}: ${e.message}`;
-  else if (typeof e === 'string') msg = e;
+function ensureTmp() {
+  const tmp = path.join(__dirname, "../tmp");
+  if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
+  return tmp;
+}
+
+function extractQualityFromText(input = "") {
+  const t = String(input || "").toLowerCase();
+
+  // 4k
+  if (t.includes("4k")) return "4k";
+
+  // 144|240|360|720|1080|1440 (con o sin p)
+  const m = t.match(/\b(144|240|360|720|1080|1440)\s*p?\b/);
+  if (m && VALID_QUALITIES.has(m[1])) return m[1];
+
+  return "";
+}
+
+function splitQueryAndQuality(rawText = "") {
+  // Permite: ".play ozuna 720" => query="ozuna", quality="720"
+  // Si no hay calidad => query=rawText, quality=""
+  const t = String(rawText || "").trim();
+  if (!t) return { query: "", quality: "" };
+
+  // busca quality al final
+  const parts = t.split(/\s+/);
+  const last = (parts[parts.length - 1] || "").toLowerCase();
+
+  let q = "";
+  if (last === "4k") q = "4k";
   else {
-    try {
-      msg = JSON.stringify(e, null, 2);
-    } catch {
-      msg = String(e);
-    }
+    const m = last.match(/^(144|240|360|720|1080|1440)p?$/i);
+    if (m) q = m[1];
   }
 
-  msg = String(msg || 'Error desconocido').trim();
-  if (msg.length > maxLen) msg = msg.slice(0, maxLen) + '\n... (recortado)';
-  return msg;
+  if (q) {
+    parts.pop();
+    return { query: parts.join(" ").trim(), quality: q };
+  }
+  return { query: t, quality: "" };
 }
 
-async function fetchJson(url, timeoutMs = HTTP_TIMEOUT_MS) {
+function isApiUrl(url = "") {
   try {
-    const res = await axios.get(url, {
-      timeout: timeoutMs,
-      headers: { 
-        accept: 'application/json', 
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
-      },
-      validateStatus: function (status) {
-        return status < 500;
-      }
-    });
-    
-    console.log(`📊 Status API: ${res.status}`);
-    
-    if (!res.data) throw new Error('Respuesta vacía de la API');
-    
-    let data = res.data;
-    if (typeof data === 'string') {
-      try {
-        data = JSON.parse(data);
-      } catch {
-        return { raw: data };
-      }
-    }
-    
-    return data;
-  } catch (error) {
-    console.error(`🔥 Error en fetchJson:`, error.message);
-    
-    if (error.response) {
-      let errorMsg = `HTTP ${error.response.status}`;
-      if (error.response.data) {
-        if (typeof error.response.data === 'object') {
-          errorMsg += `: ${error.response.data.error || error.response.data.message || JSON.stringify(error.response.data).slice(0, 200)}`;
-        } else {
-          errorMsg += `: ${String(error.response.data).slice(0, 200)}`;
+    const u = new URL(url);
+    const b = new URL(API_BASE);
+    return u.host === b.host;
+  } catch {
+    return false;
+  }
+}
+
+async function downloadToFile(url, filePath) {
+  const headers = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    Accept: "*/*",
+  };
+
+  // si descargas desde TU API (/youtube/dl) necesitas apikey
+  if (isApiUrl(url)) headers["apikey"] = API_KEY;
+
+  const res = await axios.get(url, {
+    responseType: "stream",
+    timeout: 180000,
+    headers,
+    maxRedirects: 5,
+    validateStatus: () => true,
+  });
+
+  if (res.status >= 400) {
+    throw new Error(`HTTP_${res.status}`);
+  }
+
+  await streamPipe(res.data, fs.createWriteStream(filePath));
+  return filePath;
+}
+
+// ---------- API ----------
+async function callYoutubeResolve(videoUrl, { type, quality, format }) {
+  // POST /youtube/resolve
+  const endpoint = `${API_BASE}/youtube/resolve`;
+
+  const body =
+    type === "video"
+      ? { url: videoUrl, type: "video", quality: quality || DEFAULT_VIDEO_QUALITY }
+      : { url: videoUrl, type: "audio", format: format || DEFAULT_AUDIO_FORMAT };
+
+  const r = await axios.post(endpoint, body, {
+    timeout: 120000,
+    headers: {
+      "Content-Type": "application/json",
+      apikey: API_KEY,
+      Accept: "application/json, */*",
+    },
+    validateStatus: () => true,
+  });
+
+  const data = typeof r.data === "object" ? r.data : null;
+  if (!data) throw new Error("Respuesta no JSON del servidor");
+
+  const ok = data.status === true || data.status === "true" || data.ok === true || data.success === true;
+  if (!ok) throw new Error(data.message || data.error || "Error en la API");
+
+  const result = data.result || data.data || data;
+  if (!result?.media) throw new Error("API sin media");
+
+  // dl_download puede venir como "/youtube/dl?...."
+  let dl = result.media.dl_download || "";
+  if (dl && typeof dl === "string" && dl.startsWith("/")) dl = API_BASE + dl;
+
+  // fallback directo
+  const direct = result.media.direct || "";
+
+  return {
+    title: result.title || "YouTube",
+    thumbnail: result.thumbnail || "",
+    picked: result.picked || {},
+    dl_download: dl,
+    direct,
+  };
+}
+
+// ---------- main ----------
+module.exports = async (msg, { conn, text }) => {
+  const pref = global.prefixes?.[0] || ".";
+
+  // parse: ".play ozuna 720"
+  const { query, quality } = splitQueryAndQuality(text);
+
+  if (!query) {
+    return conn.sendMessage(
+      msg.key.remoteJid,
+      { text: `✳️ Usa:\n${pref}play <término> [calidad]\nEj: *${pref}play* bad bunny diles 720` },
+      { quoted: msg }
+    );
+  }
+
+  await conn.sendMessage(msg.key.remoteJid, { react: { text: "⏳", key: msg.key } });
+
+  const res = await yts(query);
+  const video = res.videos?.[0];
+  if (!video) {
+    return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg });
+  }
+
+  const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video;
+  const viewsFmt = (views || 0).toLocaleString();
+
+  // calidad elegida por el usuario (si no, default 360)
+  const chosenQuality = VALID_QUALITIES.has(quality) ? quality : DEFAULT_VIDEO_QUALITY;
+
+  const caption = `
+🚀 *M-STER ULTRA BOT* 🚀
+
+📀 𝙸𝚗𝚏𝚘:
+❥ 𝑻𝒊𝒕𝒖𝒍𝒐: ${title}
+❥ 𝑫𝒖𝒓𝒂𝒄𝒊𝒐𝒏: ${duration}
+❥ 𝑽𝒊𝒔𝒕𝒂𝒔: ${viewsFmt}
+❥ 𝑨𝒖𝒕𝒐𝒓: ${author?.name || author || "Desconocido"}
+❥ 𝑳𝒊𝒏𝒌: ${videoUrl}
+
+⚙️ Calidad video seleccionada: ${chosenQuality === "4k" ? "4K" : `${chosenQuality}p`} (default: 360p)
+🎵 Audio: MP3
+
+📥 Opciones:
+☛ 👍 Audio MP3     (1 / audio)
+☛ ❤️ Video         (2 / video)  -> usa ${chosenQuality === "4k" ? "4K" : `${chosenQuality}p`}
+☛ 📄 Audio Doc     (4 / audiodoc)
+☛ 📁 Video Doc     (3 / videodoc)
+
+`.trim();
+
+  const preview = await conn.sendMessage(
+    msg.key.remoteJid,
+    { image: { url: thumbnail }, caption },
+    { quoted: msg }
+  );
+
+  pending[preview.key.id] = {
+    chatId: msg.key.remoteJid,
+    videoUrl,
+    title,
+    thumbnail,
+    commandMsg: msg,
+    videoQuality: chosenQuality, // ✅ aquí queda guardado
+  };
+
+  await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } });
+
+  // listener único
+  if (!conn._playproListener) {
+    conn._playproListener = true;
+
+    conn.ev.on("messages.upsert", async (ev) => {
+      for (const m of ev.messages) {
+        // 1) REACCIONES
+        if (m.message?.reactionMessage) {
+          const { key: reactKey, text: emoji } = m.message.reactionMessage;
+          const job = pending[reactKey.id];
+          if (job) await handleDownload(conn, job, emoji, job.commandMsg, "");
+        }
+
+        // 2) RESPUESTAS CITADAS
+        try {
+          const context = m.message?.extendedTextMessage?.contextInfo;
+          const citado = context?.stanzaId;
+
+          const textoRaw =
+            m.message?.conversation ||
+            m.message?.extendedTextMessage?.text ||
+            "";
+          const texto = String(textoRaw || "").trim().toLowerCase();
+
+          const job = pending[citado];
+          const chatId = m.key.remoteJid;
+
+          if (citado && job) {
+            // permite "video 720" o "2 720"
+            const qFromReply = extractQualityFromText(texto);
+
+            // AUDIO
+            if (["1", "audio", "4", "audiodoc"].includes(texto.split(/\s+/)[0])) {
+              const docMode = texto.startsWith("4") || texto.includes("audiodoc");
+              await conn.sendMessage(chatId, { react: { text: docMode ? "📄" : "🎵", key: m.key } });
+              await conn.sendMessage(chatId, { text: `🎶 Descargando audio (mp3)...` }, { quoted: m });
+              await downloadAudio(conn, job, docMode, m);
+            }
+            // VIDEO
+            else if (["2", "video", "3", "videodoc"].includes(texto.split(/\s+/)[0])) {
+              const docMode = texto.startsWith("3") || texto.includes("videodoc");
+
+              // si el usuario especificó quality en la respuesta, úsalo
+              const useQuality = VALID_QUALITIES.has(qFromReply) ? qFromReply : (job.videoQuality || DEFAULT_VIDEO_QUALITY);
+
+              await conn.sendMessage(chatId, { react: { text: docMode ? "📁" : "🎬", key: m.key } });
+              await conn.sendMessage(chatId, { text: `🎥 Descargando video (${useQuality === "4k" ? "4K" : useQuality + "p"})...` }, { quoted: m });
+              await downloadVideo(conn, { ...job, videoQuality: useQuality }, docMode, m);
+            } else {
+              await conn.sendMessage(
+                chatId,
+                { text: `⚠️ Opciones:\n1/audio, 4/audiodoc → audio\n2/video, 3/videodoc → video\n\nEj: "video 720"` },
+                { quoted: m }
+              );
+            }
+
+            if (!job._timer) {
+              job._timer = setTimeout(() => delete pending[citado], 5 * 60 * 1000);
+            }
+          }
+        } catch (e) {
+          console.error("Error en detector citado:", e);
         }
       }
-      throw new Error(errorMsg);
-    }
-    
-    if (error.code === 'ECONNABORTED') {
-      throw new Error('Timeout: La API no respondió a tiempo');
-    }
-    
-    throw new Error(`Error de conexión: ${error.message}`);
-  }
-}
-
-async function fetchBuffer(url, timeoutMs = HTTP_TIMEOUT_MS) {
-  try {
-    const res = await axios.get(url, {
-      timeout: timeoutMs,
-      responseType: 'arraybuffer',
-      headers: { 
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' 
-      },
-      maxContentLength: 100 * 1024 * 1024,
-      maxBodyLength: 100 * 1024 * 1024
     });
-    
-    if (!res.data || res.data.length === 0) {
-      throw new Error('Archivo vacío recibido');
-    }
-    
-    console.log(`✅ Archivo descargado: ${(res.data.length / (1024 * 1024)).toFixed(2)}MB`);
-    return Buffer.from(res.data);
-  } catch (error) {
-    console.error(`🔥 Error en fetchBuffer:`, error.message);
-    
-    if (error.response) {
-      throw new Error(`No se pudo descargar el audio (HTTP ${error.response.status})`);
-    }
-    
-    if (error.code === 'ECONNABORTED') {
-      throw new Error('Timeout al descargar el audio');
-    }
-    
-    throw new Error(`Error de descarga: ${error.message}`);
-  }
-}
-
-function guessMimeFromUrl(fileUrl = '') {
-  let ext = '';
-  try {
-    ext = new URL(fileUrl).pathname.split('.').pop() || '';
-  } catch {
-    ext = String(fileUrl).split('.').pop() || '';
-  }
-  ext = '.' + String(ext).toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (ext === '.m4a') return 'audio/mp4';
-  if (ext === '.opus') return 'audio/ogg; codecs=opus';
-  if (ext === '.webm') return 'audio/webm';
-  return 'audio/mpeg';
-}
-
-function safeFileName(name = 'audio') {
-  return String(name)
-    .slice(0, 90)
-    .replace(/[^\w\s.-]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim() || 'audio';
-}
-
-let handler = async (m, { conn, text, usedPrefix, command }) => {
-  const chatId = m?.chat || m?.key?.remoteJid;
-  if (!chatId) return;
-
-  if (!text) {
-    return conn.sendMessage(
-      chatId,
-      { text: `🎵 Usa: *${usedPrefix + command} <nombre o link>*\nEj: *${usedPrefix}play* bad bunny` },
-      { quoted: m }
-    );
-  }
-
-  await conn.sendMessage(chatId, { react: { text: '🕒', key: m.key } }).catch(() => {});
-
-  let ytUrl = text.trim();
-  let ytInfo = null;
-
-  try {
-    console.log(`🔍 Buscando: ${text}`);
-    
-    if (!/youtu\.be|youtube\.com/i.test(ytUrl)) {
-      const search = await yts(ytUrl);
-      const first = search?.videos?.[0];
-      if (!first) {
-        await conn.sendMessage(chatId, { text: '❌ No se encontraron resultados.' }, { quoted: m });
-        return;
-      }
-      ytInfo = first;
-      ytUrl = first.url;
-    } else {
-      const search = await yts({ query: ytUrl, pages: 1 });
-      if (search?.videos?.length) ytInfo = search.videos[0];
-    }
-    
-    console.log(`✅ Encontrado: ${ytInfo?.title}`);
-    console.log(`🔗 URL: ${ytUrl}`);
-  } catch (e) {
-    console.error('Error buscando:', e);
-    await conn.sendMessage(
-      chatId,
-      { text: `❌ Error buscando en YouTube.\n\nError: ${formatErr(e).slice(0, 500)}` },
-      { quoted: m }
-    );
-    return;
-  }
-
-  const durSec =
-    parseDurationToSeconds(ytInfo?.duration?.seconds) ??
-    parseDurationToSeconds(ytInfo?.seconds) ??
-    parseDurationToSeconds(ytInfo?.duration) ??
-    parseDurationToSeconds(ytInfo?.timestamp);
-
-  if (durSec && durSec > MAX_SECONDS) {
-    await conn.sendMessage(
-      chatId,
-      { text: `❌ Audio muy largo.\nMáximo: ${Math.floor(MAX_SECONDS / 60)} minutos.` },
-      { quoted: m }
-    );
-    return;
-  }
-
-  const title = ytInfo?.title || 'Audio';
-  const author = ytInfo?.author?.name || ytInfo?.author || 'Desconocido';
-  const duration = ytInfo?.timestamp || 'Desconocida';
-  const thumbnail = ytInfo?.thumbnail;
-  const views = ytInfo?.views || 0;
-
-  const caption =
-    `🎵 *M-STER ULTRA BOT*\n\n` +
-    `📀 *Información:*\n` +
-    `• *Título:* ${title}\n` +
-    `• *Duración:* ${duration}\n` +
-    `• *Vistas:* ${views.toLocaleString()}\n` +
-    `• *Autor:* ${author}\n` +
-    `• *Link:* ${ytUrl}\n\n` +
-    `📋 *Formato:* MP3\n\n` +
-    `⏳ *Descargando audio...*`;
-
-  try {
-    if (thumbnail) {
-      await conn.sendMessage(chatId, { image: { url: thumbnail }, caption }, { quoted: m });
-    } else {
-      await conn.sendMessage(chatId, { text: caption }, { quoted: m });
-    }
-  } catch (e) {
-    console.error('Error enviando preview:', e);
-  }
-
-  // Configuración de la API
-  const API_KEY = 'Mikeywilker1';
-  const API_BASE = 'https://api-adonix.ultraplus.click';
-
-  let apiResp = null;
-  try {
-    const apiUrl = `${API_BASE}/download/ytaudio`;
-    const params = {
-      apikey: API_KEY,
-      url: ytUrl
-    };
-
-    console.log(`🌐 Llamando API...`);
-    console.log(`URL: ${apiUrl}`);
-    
-    apiResp = await fetchJson(`${apiUrl}?apikey=${encodeURIComponent(API_KEY)}&url=${encodeURIComponent(ytUrl)}`, HTTP_TIMEOUT_MS);
-    
-    console.log(`✅ Respuesta API recibida`);
-  } catch (e) {
-    console.error('Error en la API:', e);
-    await conn.sendMessage(
-      chatId,
-      { text: `❌ Error con la API de audio.\n\nError: ${formatErr(e).slice(0, 500)}` },
-      { quoted: m }
-    );
-    return;
-  }
-
-  // Manejar diferentes formatos de respuesta
-  let directUrl = null;
-  let apiTitle = title;
-
-  // Intentar extraer la URL de descarga
-  if (apiResp?.url) {
-    directUrl = apiResp.url;
-    apiTitle = apiResp.title || title;
-  } else if (apiResp?.data?.url) {
-    directUrl = apiResp.data.url;
-    apiTitle = apiResp.data.title || title;
-  } else if (apiResp?.download) {
-    directUrl = apiResp.download;
-    apiTitle = apiResp.title || title;
-  } else if (apiResp?.link) {
-    directUrl = apiResp.link;
-    apiTitle = apiResp.title || title;
-  } else if (apiResp?.result?.url) {
-    directUrl = apiResp.result.url;
-    apiTitle = apiResp.result.title || title;
-  } else if (apiResp?.dl) {
-    directUrl = apiResp.dl;
-    apiTitle = apiResp.title || title;
-  } else if (apiResp?.direct) {
-    directUrl = apiResp.direct;
-    apiTitle = apiResp.title || title;
-  } else if (typeof apiResp === 'string' && apiResp.startsWith('http')) {
-    directUrl = apiResp;
-  } else if (apiResp?.raw && typeof apiResp.raw === 'string') {
-    const urlMatch = apiResp.raw.match(/(https?:\/\/[^\s"'<>]+\.(mp3|m4a|opus|webm)[^\s"'<>]*)/i);
-    if (urlMatch) {
-      directUrl = urlMatch[1];
-    }
-  }
-
-  if (!directUrl) {
-    console.error('❌ No se pudo extraer URL:', apiResp);
-    await conn.sendMessage(
-      chatId,
-      { text: `❌ La API no devolvió un link válido.\nRespuesta: ${JSON.stringify(apiResp || 'Vacío').slice(0, 500)}` },
-      { quoted: m }
-    );
-    return;
-  }
-
-  console.log(`✅ URL de descarga: ${directUrl}`);
-  console.log(`📝 Título: ${apiTitle}`);
-
-  try {
-    await conn.sendMessage(
-      chatId,
-      { text: `Audio descargado con éxito ✅.` },
-      { quoted: m }
-    );
-
-    const audioBuffer = await fetchBuffer(directUrl, HTTP_TIMEOUT_MS * 2);
-    
-    if (!audioBuffer || audioBuffer.length === 0) {
-      throw new Error('El audio descargado está vacío');
-    }
-
-    const mime = guessMimeFromUrl(directUrl);
-    const fileName = `${safeFileName(apiTitle)}.mp3`;
-    
-    console.log(`✅ Audio listo: ${(audioBuffer.length / (1024 * 1024)).toFixed(2)}MB`);
-
-    await conn.sendMessage(
-      chatId,
-      {
-        audio: audioBuffer,
-        mimetype: mime,
-        fileName: fileName
-      },
-      { quoted: m }
-    );
-
-    console.log(`✅ Audio enviado exitosamente`);
-    
-    await conn.sendMessage(chatId, { react: { text: '✅', key: m.key } }).catch(() => {});
-    
-  } catch (e) {
-    console.error('Error procesando audio:', e);
-    await conn.sendMessage(
-      chatId,
-      { text: `❌ Error al procesar el audio.\n\nError: ${formatErr(e).slice(0, 500)}` },
-      { quoted: m }
-    );
   }
 };
 
-handler.help = ['play <texto|link>'];
-handler.tags = ['multimedia'];
-handler.command = ['play'];
+async function handleDownload(conn, job, choice, quoted, extraText) {
+  const mapping = { "👍": "audio", "❤️": "video", "📄": "audioDoc", "📁": "videoDoc" };
+  const key = mapping[choice];
+  if (!key) return;
 
-module.exports = handler;
+  const isDoc = key.endsWith("Doc");
+
+  if (key.startsWith("audio")) {
+    await conn.sendMessage(job.chatId, { text: `⏳ Descargando audio (mp3)...` }, { quoted: quoted || job.commandMsg });
+    return downloadAudio(conn, job, isDoc, quoted || job.commandMsg);
+  }
+
+  // video
+  const useQuality = job.videoQuality || DEFAULT_VIDEO_QUALITY;
+  await conn.sendMessage(job.chatId, { text: `⏳ Descargando video (${useQuality === "4k" ? "4K" : useQuality + "p"})...` }, { quoted: quoted || job.commandMsg });
+  return downloadVideo(conn, job, isDoc, quoted || job.commandMsg);
+}
+
+async function downloadAudio(conn, job, asDocument, quoted) {
+  const { chatId, videoUrl, title } = job;
+
+  let resolved;
+  try {
+    resolved = await callYoutubeResolve(videoUrl, { type: "audio", format: DEFAULT_AUDIO_FORMAT });
+  } catch (e) {
+    await conn.sendMessage(chatId, { text: `❌ Error API (audio): ${e.message}` }, { quoted });
+    return;
+  }
+
+  const mediaUrl = resolved.dl_download || resolved.direct;
+  if (!mediaUrl) {
+    await conn.sendMessage(chatId, { text: "❌ No se pudo obtener audio." }, { quoted });
+    return;
+  }
+
+  const tmp = ensureTmp();
+  const base = safeName(title);
+
+  const inFile = path.join(tmp, `${Date.now()}_in.bin`);
+  await downloadToFile(mediaUrl, inFile);
+
+  // Convertir a mp3 siempre (si falla, manda como doc)
+  const outMp3 = path.join(tmp, `${Date.now()}_${base}.mp3`);
+  let outFile = outMp3;
+
+  try {
+    await new Promise((resolve, reject) => {
+      ffmpeg(inFile)
+        .audioCodec("libmp3lame")
+        .audioBitrate("128k")
+        .format("mp3")
+        .save(outMp3)
+        .on("end", resolve)
+        .on("error", reject);
+    });
+    try { fs.unlinkSync(inFile); } catch {}
+  } catch {
+    outFile = inFile;
+    asDocument = true;
+  }
+
+  const sizeMB = fileSizeMB(outFile);
+  if (sizeMB > MAX_MB) {
+    try { fs.unlinkSync(outFile); } catch {}
+    await conn.sendMessage(chatId, { text: `❌ El audio pesa ${sizeMB.toFixed(2)}MB (> ${MAX_MB}MB).` }, { quoted });
+    return;
+  }
+
+  await conn.sendMessage(
+    chatId,
+    {
+      [asDocument ? "document" : "audio"]: fs.readFileSync(outFile),
+      mimetype: "audio/mpeg",
+      fileName: `${base}.mp3`,
+    },
+    { quoted }
+  );
+
+  try { fs.unlinkSync(outFile); } catch {}
+}
+
+async function downloadVideo(conn, job, asDocument, quoted) {
+  const { chatId, videoUrl, title } = job;
+
+  const q = VALID_QUALITIES.has(job.videoQuality) ? job.videoQuality : DEFAULT_VIDEO_QUALITY;
+
+  let resolved;
+  try {
+    resolved = await callYoutubeResolve(videoUrl, { type: "video", quality: q });
+  } catch (e) {
+    await conn.sendMessage(chatId, { text: `❌ Error API (video): ${e.message}` }, { quoted });
+    return;
+  }
+
+  const mediaUrl = resolved.dl_download || resolved.direct;
+  if (!mediaUrl) {
+    await conn.sendMessage(chatId, { text: "❌ No se pudo obtener video." }, { quoted });
+    return;
+  }
+
+  const tmp = ensureTmp();
+  const base = safeName(title);
+  const tag = q === "4k" ? "4k" : `${q}p`;
+  const file = path.join(tmp, `${Date.now()}_${base}_${tag}.mp4`);
+
+  await downloadToFile(mediaUrl, file);
+
+  const sizeMB = fileSizeMB(file);
+  if (sizeMB > MAX_MB) {
+    try { fs.unlinkSync(file); } catch {}
+    await conn.sendMessage(chatId, { text: `❌ El video pesa ${sizeMB.toFixed(2)}MB (> ${MAX_MB}MB).` }, { quoted });
+    return;
+  }
+
+  await conn.sendMessage(
+    chatId,
+    {
+      [asDocument ? "document" : "video"]: fs.readFileSync(file),
+      mimetype: "video/mp4",
+      fileName: `${base}_${tag}.mp4`,
+      caption: asDocument ? undefined : `🎬 Aquí está tu video (${tag})`,
+    },
+    { quoted }
+  );
+
+  try { fs.unlinkSync(file); } catch {}
+}
+
+module.exports.command = ["play"];
